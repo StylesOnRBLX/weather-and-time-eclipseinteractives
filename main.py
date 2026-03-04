@@ -1,22 +1,13 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException
 from datetime import datetime
 import pytz
 import httpx
-import os
 
 app = FastAPI(title="Eclipse Interactives - Time & Weather API")
 
-API_KEY = os.getenv("API_KEY", "my-secret-key-123")
-
-# --- API Key Auth ---
-def verify(x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
 # --- Time Endpoint ---
 @app.get("/time")
-def get_time(timezone: str = "UTC", x_api_key: str = Header(...)):
-    verify(x_api_key)
+def get_time(timezone: str = "UTC"):
     try:
         tz = pytz.timezone(timezone)
         now = datetime.now(tz)
@@ -32,10 +23,8 @@ def get_time(timezone: str = "UTC", x_api_key: str = Header(...)):
 
 # --- Weather Endpoint ---
 @app.get("/weather")
-async def get_weather(city: str, x_api_key: str = Header(...)):
-    verify(x_api_key)
+async def get_weather(city: str):
     async with httpx.AsyncClient() as client:
-        # Geocode city name → lat/lon
         geo = await client.get(
             "https://geocoding-api.open-meteo.com/v1/search",
             params={"name": city, "count": 1}
@@ -50,7 +39,6 @@ async def get_weather(city: str, x_api_key: str = Header(...)):
         country = results[0].get("country", "")
         timezone = results[0].get("timezone", "UTC")
 
-        # Fetch weather
         weather = await client.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
@@ -65,14 +53,12 @@ async def get_weather(city: str, x_api_key: str = Header(...)):
         data = weather.json()
         w = data["current_weather"]
 
-        # Match current hour to get humidity & feels-like
-        current_hour = w["time"][:13]  # e.g. "2024-03-04T14"
+        current_hour = w["time"][:13]
         hourly_times = [t[:13] for t in data["hourly"]["time"]]
         idx = hourly_times.index(current_hour) if current_hour in hourly_times else 0
         humidity = data["hourly"]["relative_humidity_2m"][idx]
         feels_like = data["hourly"]["apparent_temperature"][idx]
 
-        # Map weather code to description
         weather_codes = {
             0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
             45: "Foggy", 48: "Icy fog", 51: "Light drizzle", 53: "Drizzle",
@@ -96,45 +82,16 @@ async def get_weather(city: str, x_api_key: str = Header(...)):
 
 # --- Combined Endpoint ---
 @app.get("/time-and-weather")
-async def get_time_and_weather(city: str, timezone: str = None, x_api_key: str = Header(...)):
-    verify(x_api_key)
-    # Reuse both functions
-    weather = await get_weather(city, x_api_key)
-    # Auto-use city's timezone if none provided
-    tz_to_use = timezone or results_timezone(city)
-    time = get_time(tz_to_use, x_api_key)
+async def get_time_and_weather(city: str, timezone: str = None):
+    weather = await get_weather(city)
+    tz_to_use = timezone or weather["city"]
+    time = get_time(tz_to_use)
     return {
         "time": time,
         "weather": weather
     }
 
-async def results_timezone(city: str):
-    async with httpx.AsyncClient() as client:
-        geo = await client.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": city, "count": 1}
-        )
-        results = geo.json().get("results", [{}])
-        return results[0].get("timezone", "UTC")
-
 # --- Health Check ---
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Eclipse Interactives API is running"}
-```
-
----
-
-**`requirements.txt`**
-```
-fastapi
-uvicorn
-pytz
-httpx
-```
-
----
-
-**`Procfile`**
-```
-web: uvicorn main:app --host 0.0.0.0 --port $PORT
